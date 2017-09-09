@@ -111,6 +111,9 @@ echo | openssl s_client -CAfile /root/test/ca/intermediate/certs/ca-chain.rsa.ce
 #connect to logstash via ecc certificate
 echo | openssl s_client -CAfile /root/test/ca/intermediate/certs/ca-chain.ecc.cert.pem  -cert /root/test/ca/intermediate/certs/localhost.ecc.cert.pem -key /root/test/ca/intermediate/private/localhost.ecc.pkcs8.key  -servername localhost -state -tls1_2 -connect localhost:5051 2>&1 | tee /root/test/ecc.client.log
 
+# sleep - otherwise the tcpdump could be empty
+sleep 3
+
 #kill logstash and tcpdump
 kill $LS_PID 
 kill -2 $TD_PID
