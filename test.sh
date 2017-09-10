@@ -1,130 +1,175 @@
 #!/bin/bash
-#create certificates - only if no ca folder is found
-if [ ! -d /root/test/ca ]
-then
+LS_PATH=/usr/share/logstash/bin/logstash
 
-    CURVE=secp521r1
-    PASS=test
+LS_JAVA_OPTS="-Djava.security.debug=all -Djavax.net.debug=all" 
 
-    ## root ca
-    mkdir -p /root/test/ca/{certs,crl,newcerts,private}
-    cd /root/test/ca
-    touch index.{rsa,ecc}.txt
-    echo 1000 > serial
+# for certificates
+# CURVE=secp521r1 # NO SHARED CIPHER
+# CURVE=secp160r1 # UNKNOWN_GROUP
+# CURVE=secp384r1 # NO_SHARED_CIPHER
+# CURVE=prime256v1 # Works
+# CURVE=Oakley-EC2N-3 # Wont work with openssl + aes (creating root ca key)
 
-    #create root ca keys
-    openssl genrsa -aes256 -passout pass:$PASS -out private/ca.rsa.key.pem 4096 
-    openssl ecparam -name $CURVE -genkey | openssl ec -aes256 -passout pass:$PASS -out private/ca.ecc.key.pem
+# where to store CAs
+FOLDER=$(pwd)
+PASS=testtest
 
-    #copy root ca configs
-    wget https://raw.githubusercontent.com/aubreybox/tmp/master/openssl.rsa.cnf -O openssl.rsa.cnf
-    wget https://raw.githubusercontent.com/aubreybox/tmp/master/openssl.ecc.cnf -O openssl.ecc.cnf
-
-    #sign root ca certs
-    openssl req -config openssl.rsa.cnf -key private/ca.rsa.key.pem -new -x509 -days 7300 -sha256 -extensions v3_ca -out certs/ca.rsa.cert.pem -passin file:<(echo -n "$PASS") -subj "/C=US/ST=test/L=test/O=test/CN=root ca rsa"
-    openssl req -config openssl.ecc.cnf -key private/ca.ecc.key.pem -new -x509 -days 7300 -sha256 -extensions v3_ca -out certs/ca.ecc.cert.pem -passin file:<(echo -n "$PASS") -subj "/C=US/ST=test/L=test/O=test/CN=root ca ecc"
-
-
-    ## intermediate ca
-
-    mkdir -p /root/test/ca/intermediate/{certs,crl,csr,newcerts,private}
-    cd /root/test/ca/intermediate
-    touch index.{rsa,ecc}.txt
-    echo 1000 > serial
-    echo 1000 > crlnumber
-    cd /root/test/ca/
-
-    #create intermediate ca keys
-    openssl genrsa -aes256 -passout pass:$PASS -out intermediate/private/intermediate.rsa.key.pem 4096
-    openssl ecparam -name $CURVE -genkey  | openssl ec -aes256 -passout pass:$PASS -out intermediate/private/intermediate.ecc.key.pem
-
-    #copy intermediate ca configs
-    wget https://raw.githubusercontent.com/aubreybox/tmp/master/intermediate/openssl.rsa.cnf -O intermediate/openssl.rsa.cnf
-    wget https://raw.githubusercontent.com/aubreybox/tmp/master/intermediate/openssl.ecc.cnf -O intermediate/openssl.ecc.cnf
-
-    #sign intermediate ca certs
-    openssl req -config intermediate/openssl.rsa.cnf -new -sha256 -key intermediate/private/intermediate.rsa.key.pem -out intermediate/csr/intermediate.rsa.csr.pem -passin file:<(echo -n "$PASS") -subj "/C=US/ST=test/L=test/O=test/CN=intermediate ca rsa"
-    openssl req -config intermediate/openssl.ecc.cnf -new -sha256 -key intermediate/private/intermediate.ecc.key.pem -out intermediate/csr/intermediate.ecc.csr.pem -passin file:<(echo -n "$PASS") -subj "/C=US/ST=test/L=test/O=test/CN=intermediate ca ecc"
-
-    openssl ca -config openssl.rsa.cnf -extensions v3_intermediate_ca -days 3650 -notext -md sha256 -in intermediate/csr/intermediate.rsa.csr.pem -out intermediate/certs/intermediate.rsa.cert.pem -passin file:<(echo -n "$PASS") -batch
-    openssl ca -config openssl.ecc.cnf -extensions v3_intermediate_ca -days 3650 -notext -md sha256 -in intermediate/csr/intermediate.ecc.csr.pem -out intermediate/certs/intermediate.ecc.cert.pem -passin file:<(echo -n "$PASS") -batch
-
-
-    # server cert
-
-    # create server key
-    cd /root/test/ca/intermediate/
-    openssl genrsa -out private/localhost.rsa.key.pem 2048
-    openssl ecparam -name $CURVE -genkey -out private/localhost.ecc.key.pem 
-
-    #create csr
-    openssl req -config openssl.rsa.cnf -key private/localhost.rsa.key.pem -new -sha256 -out csr/localhost.rsa.csr.pem -subj "/C=US/ST=test/L=test/O=test/CN=localhost"
-    openssl req -config openssl.ecc.cnf -key private/localhost.ecc.key.pem -new -sha256 -out csr/localhost.ecc.csr.pem -subj "/C=US/ST=test/L=test/O=test/CN=localhost"
-
-    #sign csr
-    openssl ca -config openssl.rsa.cnf -extensions server_cert -batch -days 375 -notext -md sha256 -in csr/localhost.rsa.csr.pem -out certs/localhost.rsa.cert.pem -passin file:<(echo -n "$PASS") -batch
-    openssl ca -config openssl.ecc.cnf -extensions server_cert -batch -days 375 -notext -md sha256 -in csr/localhost.ecc.csr.pem -out certs/localhost.ecc.cert.pem -passin file:<(echo -n "$PASS") -batch
-
-    # check
-
-    # chain root / intermediate
-    cat certs/intermediate.rsa.cert.pem ../certs/ca.rsa.cert.pem > certs/ca-chain.rsa.cert.pem
-    cat certs/intermediate.ecc.cert.pem ../certs/ca.ecc.cert.pem > certs/ca-chain.ecc.cert.pem
-
-    openssl verify -CAfile certs/ca-chain.rsa.cert.pem  certs/localhost.rsa.cert.pem
-    if [ $? -ne 0 ]
+for CURVE in $(openssl ecparam -list_curves | grep ":"| grep -v Oakley | cut -d " " -f 3|  tr -d ":"); do 
+    echo $CURVE
+    #create certificates - only if no ca folder is found
+    if [ ! -d $FOLDER/ca ]
     then
-        echo "certificates not verifiable"
-        exit 1
+        ## root ca
+        mkdir -p $FOLDER/ca/{certs,crl,newcerts,private}
+        touch $FOLDER/ca/index.{rsa,ecc}.txt
+        echo 1000 > $FOLDER/ca/serial
+
+        #create root ca keys
+        openssl genrsa -aes256 -passout pass:$PASS -out $FOLDER/ca/private/ca.rsa.key.pem 4096 
+        openssl ecparam -name $CURVE -genkey | openssl ec -aes256 -passout pass:$PASS -out $FOLDER/ca/private/ca.ecc.key.pem
+
+        #copy root ca configs
+        wget https://raw.githubusercontent.com/aubreybox/tmp/master/openssl.rsa.cnf -O $FOLDER/ca/openssl.rsa.cnf
+        wget https://raw.githubusercontent.com/aubreybox/tmp/master/openssl.ecc.cnf -O $FOLDER/ca/openssl.ecc.cnf
+
+        sed -i "s-/root/test-$FOLDER-g" $FOLDER/ca/openssl.rsa.cnf
+        sed -i "s-/root/test-$FOLDER-g" $FOLDER/ca/openssl.ecc.cnf
+
+        #sign root ca certs
+        openssl req -config $FOLDER/ca/openssl.rsa.cnf -key $FOLDER/ca/private/ca.rsa.key.pem -new -x509 -days 7300 -sha256 -extensions v3_ca -out $FOLDER/ca/certs/ca.rsa.cert.pem -passin file:<(echo -n "$PASS") -subj "/C=US/ST=test/L=test/O=test/CN=root ca rsa"
+        openssl req -config $FOLDER/ca/openssl.ecc.cnf -key $FOLDER/ca/private/ca.ecc.key.pem -new -x509 -days 7300 -sha256 -extensions v3_ca -out $FOLDER/ca/certs/ca.ecc.cert.pem -passin file:<(echo -n "$PASS") -subj "/C=US/ST=test/L=test/O=test/CN=root ca ecc"
+
+        openssl pkcs12 -export -inkey $FOLDER/ca/private/ca.rsa.key.pem -in $FOLDER/ca/certs/ca.rsa.cert.pem -name ca.rsa.cert.pem -passin file:<(echo -n "$PASS") -out $FOLDER/ca/private/ca.rsa.cert.p12  -passout pass:$PASS
+        openssl pkcs12 -export -inkey $FOLDER/ca/private/ca.ecc.key.pem -in $FOLDER/ca/certs/ca.ecc.cert.pem -name ca.ecc.cert.pem -passin file:<(echo -n "$PASS") -out $FOLDER/ca/private/ca.ecc.cert.p12  -passout pass:$PASS
+
+        ## intermediate ca
+        mkdir -p $FOLDER/ca/intermediate/{certs,crl,csr,newcerts,private}
+        touch $FOLDER/ca/intermediate/index.{rsa,ecc}.txt
+        echo 1000 > $FOLDER/ca/intermediate/serial
+        echo 1000 > $FOLDER/ca/intermediate/crlnumber
+
+        #create intermediate ca keys
+        openssl genrsa -aes256 -passout pass:$PASS -out $FOLDER/ca/intermediate/private/intermediate.rsa.key.pem 4096
+        openssl ecparam -name $CURVE -genkey  | openssl ec -aes256 -passout pass:$PASS -out $FOLDER/ca/intermediate/private/intermediate.ecc.key.pem
+
+        #copy intermediate ca configs
+        wget https://raw.githubusercontent.com/aubreybox/tmp/master/intermediate/openssl.rsa.cnf -O $FOLDER/ca/intermediate/openssl.rsa.cnf
+        wget https://raw.githubusercontent.com/aubreybox/tmp/master/intermediate/openssl.ecc.cnf -O $FOLDER/ca/intermediate/openssl.ecc.cnf
+        sed -i "s-/root/test-$FOLDER-g" $FOLDER/ca/intermediate/openssl.rsa.cnf
+        sed -i "s-/root/test-$FOLDER-g" $FOLDER/ca/intermediate/openssl.ecc.cnf
+
+        #sign intermediate ca certs
+        openssl req -config $FOLDER/ca/intermediate/openssl.rsa.cnf -new -sha256 -key $FOLDER/ca/intermediate/private/intermediate.rsa.key.pem -out $FOLDER/ca/intermediate/csr/intermediate.rsa.csr.pem -passin file:<(echo -n "$PASS") -subj "/C=US/ST=test/L=test/O=test/CN=intermediate ca rsa"
+        openssl req -config $FOLDER/ca/intermediate/openssl.ecc.cnf -new -sha256 -key $FOLDER/ca/intermediate/private/intermediate.ecc.key.pem -out $FOLDER/ca/intermediate/csr/intermediate.ecc.csr.pem -passin file:<(echo -n "$PASS") -subj "/C=US/ST=test/L=test/O=test/CN=intermediate ca ecc"
+
+        openssl ca -config $FOLDER/ca/openssl.rsa.cnf -extensions v3_intermediate_ca -days 3650 -notext -md sha256 -in $FOLDER/ca/intermediate/csr/intermediate.rsa.csr.pem -out $FOLDER/ca/intermediate/certs/intermediate.rsa.cert.pem -passin file:<(echo -n "$PASS") -batch
+        openssl ca -config $FOLDER/ca/openssl.ecc.cnf -extensions v3_intermediate_ca -days 3650 -notext -md sha256 -in $FOLDER/ca/intermediate/csr/intermediate.ecc.csr.pem -out $FOLDER/ca/intermediate/certs/intermediate.ecc.cert.pem -passin file:<(echo -n "$PASS") -batch
+
+        openssl pkcs12 -export -inkey $FOLDER/ca/intermediate/private/intermediate.rsa.key.pem -in $FOLDER/ca/intermediate/certs/intermediate.rsa.cert.pem -name intermediate.rsa.cert.pem -passin file:<(echo -n "$PASS") -out $FOLDER/ca/intermediate/private/intermediate.rsa.cert.p12  -passout pass:$PASS
+        openssl pkcs12 -export -inkey $FOLDER/ca/intermediate/private/intermediate.ecc.key.pem -in $FOLDER/ca/intermediate/certs/intermediate.ecc.cert.pem -name intermediate.ecc.cert.pem -passin file:<(echo -n "$PASS") -out $FOLDER/ca/intermediate/private/intermediate.ecc.cert.p12  -passout pass:$PASS
+
+        # server cert
+        # create server key
+        openssl genrsa -out $FOLDER/ca/intermediate/private/localhost.rsa.key.pem 2048
+        openssl ecparam -name $CURVE -genkey -out $FOLDER/ca/intermediate/private/localhost.ecc.key.pem 
+
+        #create csr
+        openssl req -config $FOLDER/ca/intermediate/openssl.rsa.cnf -key $FOLDER/ca/intermediate/private/localhost.rsa.key.pem -new -sha256 -out $FOLDER/ca/intermediate/csr/localhost.rsa.csr.pem -subj "/C=US/ST=test/L=test/O=test/CN=localhost"
+        openssl req -config $FOLDER/ca/intermediate/openssl.ecc.cnf -key $FOLDER/ca/intermediate/private/localhost.ecc.key.pem -new -sha256 -out $FOLDER/ca/intermediate/csr/localhost.ecc.csr.pem -subj "/C=US/ST=test/L=test/O=test/CN=localhost"
+
+        #sign csr
+        openssl ca -config $FOLDER/ca/intermediate/openssl.rsa.cnf -extensions server_cert -batch -days 375 -notext -md sha256 -in $FOLDER/ca/intermediate/csr/localhost.rsa.csr.pem -out $FOLDER/ca/intermediate/certs/localhost.rsa.cert.pem -passin file:<(echo -n "$PASS") -batch
+        openssl ca -config $FOLDER/ca/intermediate/openssl.ecc.cnf -extensions server_cert -batch -days 375 -notext -md sha256 -in $FOLDER/ca/intermediate/csr/localhost.ecc.csr.pem -out $FOLDER/ca/intermediate/certs/localhost.ecc.cert.pem -passin file:<(echo -n "$PASS") -batch
+
+        # check
+        # chain root / intermediate
+        cat $FOLDER/ca/intermediate/certs/intermediate.rsa.cert.pem $FOLDER/ca/certs/ca.rsa.cert.pem > $FOLDER/ca/intermediate/certs/ca-chain.rsa.cert.pem
+        cat $FOLDER/ca/intermediate/certs/intermediate.ecc.cert.pem $FOLDER/ca/certs/ca.ecc.cert.pem > $FOLDER/ca/intermediate/certs/ca-chain.ecc.cert.pem
+
+        openssl verify -CAfile $FOLDER/ca/intermediate/certs/ca-chain.rsa.cert.pem  $FOLDER/ca/intermediate/certs/localhost.rsa.cert.pem
+        if [ $? -ne 0 ]
+        then
+            echo "certificates not verifiable"
+            exit 1
+        fi
+        openssl verify -CAfile $FOLDER/ca/intermediate/certs/ca-chain.ecc.cert.pem  $FOLDER/ca/intermediate/certs/localhost.ecc.cert.pem
+        if [ $? -ne 0 ]
+        then
+            echo "certificates not verifiable"
+            exit 1
+        fi
+
+        openssl pkcs8 -topk8 -inform PEM -outform PEM -nocrypt -in $FOLDER/ca/intermediate/private/localhost.rsa.key.pem -out $FOLDER/ca/intermediate/private/localhost.rsa.pkcs8.key
+        openssl pkcs8 -topk8 -inform PEM -outform PEM -nocrypt -in $FOLDER/ca/intermediate/private/localhost.ecc.key.pem -out $FOLDER/ca/intermediate/private/localhost.ecc.pkcs8.key
     fi
-    openssl verify -CAfile certs/ca-chain.ecc.cert.pem  certs/localhost.ecc.cert.pem
-    if [ $? -ne 0 ]
+    # / create certificates
+    ## LS
+
+    #copy logstash config - only if not already there
+    mkdir -p $FOLDER/out/$CURVE/
+    mkdir -p $FOLDER/ls_data_{rsa,ecc}
+    if [ ! -f $FOLDER/ls.conf ]
     then
-        echo "certificates not verifiable"
-        exit 1
+        wget https://raw.githubusercontent.com/aubreybox/tmp/master/ls.conf -O $FOLDER/ls.conf
+        sed -i "s-/root/test-$FOLDER-g" $FOLDER/ls.conf
+
     fi
 
-    openssl pkcs8 -topk8 -inform PEM -outform PEM -nocrypt -in private/localhost.rsa.key.pem -out private/localhost.rsa.pkcs8.key
-    openssl pkcs8 -topk8 -inform PEM -outform PEM -nocrypt -in private/localhost.ecc.key.pem -out private/localhost.ecc.pkcs8.key
-fi
-# / create certificates
-## LS
+    #start tcpdump
+    tcpdump -w $FOLDER/out/$CURVE/hs.cap -i lo port 5050 or port 5051 -U &
+    TD_PID=$!
 
-#copy logstash config - only if not already there
-cd /root/test
-mkdir -p /root/test/out/
-if [ ! -f /root/test/ls.conf ]
-then
-    wget https://raw.githubusercontent.com/aubreybox/tmp/master/ls.conf -O ls.conf
-fi
+    #start logstash
+    $LS_PATH --config.debug --path.data $FOLDER/ls_data_rsa --log.level=debug -f $FOLDER/ls.conf -l $FOLDER/ &> $FOLDER/out/$CURVE/ls.rsa.out &
+    LS_PID=$!
 
-#start logstash
-LS_JAVA_OPTS="-Djava.security.debug=all -Djavax.net.debug=all" /usr/share/logstash/bin/logstash --config.debug --log.level=debug -f /root/test/ls.conf -l /root/test/ &> /root/test/out/ls.out &
-LS_PID=$!
+    #wait for logstash to be ready
+    until ss -nptl | grep -qE "\:505[01]"
+    do 
+        sleep 1
+        echo "waiting for logstash to be ready"
+    done
 
-#start tcpdump
-tcpdump -w /root/test/out/hs.cap -i any port 5050 or port 5051 -U &
-TD_PID=$!
+    #connect to logstash via rsa certificate
+    echo | timeout 3  openssl s_client  -msg -CAfile $FOLDER/ca/intermediate/certs/ca-chain.rsa.cert.pem  -cert $FOLDER/ca/intermediate/certs/localhost.rsa.cert.pem -key $FOLDER/ca/intermediate/private/localhost.rsa.pkcs8.key  -servername localhost -state -tls1_2 -connect localhost:5050 -cipher ECDHE-RSA-AES256-GCM-SHA384 2>&1 | tee $FOLDER/out/$CURVE/openssl.rsa.log
 
-#wait for logstash to be ready
-until ss -nptl | grep -qE "\:505[01]"
-do 
-    sleep 1
-    echo "waiting for logstash to be ready"
+    kill $LS_PID 
+
+    while ss -nptl | grep -qE "\:505[01]"
+    do 
+        sleep 1
+        echo "waiting for logstash to shutdown"
+    done
+
+    #start logstash
+    $LS_PATH --config.debug --path.data $FOLDER/ls_data_ecc --log.level=debug -f $FOLDER/ls.conf -l $FOLDER/ &> $FOLDER/out/$CURVE/ls.ecc.out &
+    LS_PID=$!
+
+    #wait for logstash to be ready
+    until ss -nptl | grep -qE "\:505[01]"
+    do 
+        sleep 1
+        echo "waiting for logstash to be ready"
+    done
+
+    #connect to logstash via ecc certificate
+    echo | timeout 3 openssl s_client  -msg -CAfile $FOLDER/ca/intermediate/certs/ca-chain.ecc.cert.pem  -cert $FOLDER/ca/intermediate/certs/localhost.ecc.cert.pem -key $FOLDER/ca/intermediate/private/localhost.ecc.pkcs8.key  -servername localhost -state -tls1_2 -connect localhost:5051 -cipher ECDHE-ECDSA-AES256-GCM-SHA384  2>&1 | tee $FOLDER/out/$CURVE/openssl.ecc.log
+
+    # sleep - otherwise the tcpdump could be empty
+    echo "Waiting 3 seconds to exit"
+    sleep 3
+
+    #kill logstash and tcpdump
+    kill -2 $TD_PID
+    kill $LS_PID
+    
+    while ss -nptl | grep -qE "\:505[01]"
+    do 
+        sleep 1
+        echo "waiting for logstash to shutdown before changing the curve"
+    done
+    rm -rv $FOLDER/ca
 done
-
-#connect to logstash via rsa certificate
-echo | openssl s_client -CAfile /root/test/ca/intermediate/certs/ca-chain.rsa.cert.pem  -cert /root/test/ca/intermediate/certs/localhost.rsa.cert.pem -key /root/test/ca/intermediate/private/localhost.rsa.pkcs8.key  -servername localhost -state -tls1_2 -connect localhost:5050 2>&1 | tee /root/test/out/rsa.client.log
-
-#connect to logstash via ecc certificate
-echo | openssl s_client -CAfile /root/test/ca/intermediate/certs/ca-chain.ecc.cert.pem  -cert /root/test/ca/intermediate/certs/localhost.ecc.cert.pem -key /root/test/ca/intermediate/private/localhost.ecc.pkcs8.key  -servername localhost -state -tls1_2 -connect localhost:5051 2>&1 | tee /root/test/out/ecc.client.log
-
-# sleep - otherwise the tcpdump could be empty
-echo "Waiting 3 seconds to exit"
-sleep 3
-
-#kill logstash and tcpdump
-kill $LS_PID 
-kill -2 $TD_PID
+# /curve
 
 
